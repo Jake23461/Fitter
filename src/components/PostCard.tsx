@@ -4,6 +4,8 @@ import { router } from 'expo-router'
 import { supabase } from '../lib/supabase'
 import { useAuthStore } from '../stores/authStore'
 import { Post } from '../types'
+import { Avatar } from './ui/Avatar'
+import { Colors, Space, Type, Radii } from '../tokens'
 
 const { width } = Dimensions.get('window')
 const CARD_WIDTH = width - 16
@@ -91,15 +93,12 @@ export function PostCard({ post, onLikeToggle }: Props) {
             style={styles.userRow}
             onPress={() => router.push(`/profile/${post.user_id}`)}
           >
-            <View style={styles.avatar}>
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
-              ) : (
-                <Text style={styles.avatarInitial}>
-                  {post.profile?.display_name?.[0]?.toUpperCase() ?? '?'}
-                </Text>
-              )}
-            </View>
+            <Avatar
+              uri={avatarUrl ?? undefined}
+              initials={post.profile?.display_name?.[0]?.toUpperCase() ?? '?'}
+              size="sm"
+              isActive={false}
+            />
             <View style={styles.userInfo}>
               <Text style={styles.displayName}>{post.profile?.display_name ?? 'User'}</Text>
               <Text style={styles.meta}>📍 {post.gym?.name ?? 'Gym'} · {timeAgo(post.created_at)}</Text>
@@ -144,10 +143,10 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_WIDTH,
     alignSelf: 'center',
-    marginBottom: 24,
-    borderRadius: 26,
+    marginBottom: Space.lg,
+    borderRadius: Radii.xl,
     overflow: 'hidden',
-    backgroundColor: '#0F0F0F',
+    backgroundColor: Colors.surface,
   },
   imageContainer: {
     width: CARD_WIDTH,
@@ -161,7 +160,7 @@ const styles = StyleSheet.create({
   imagePlaceholder: {
     width: CARD_WIDTH,
     height: IMAGE_HEIGHT,
-    backgroundColor: '#111',
+    backgroundColor: Colors.surface,
   },
   scrim: {
     position: 'absolute',
@@ -169,7 +168,7 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     height: 110,
-    backgroundColor: 'rgba(0,0,0,0.38)',
+    backgroundColor: Colors.overlayScrim,
   },
   imageOverlay: {
     position: 'absolute',
@@ -179,48 +178,35 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingTop: 14,
+    paddingHorizontal: Space.md,
+    paddingTop: Space.md,
   },
   userRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: Space.sm,
     flex: 1,
-    paddingRight: 8,
+    paddingRight: Space.sm,
   },
-  avatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#1a1a1a',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.22)',
-  },
-  avatarImage: { width: 38, height: 38, borderRadius: 19 },
-  avatarInitial: { color: '#E5183A', fontWeight: '800', fontSize: 15 },
   userInfo: { flex: 1 },
-  displayName: { color: '#fff', fontWeight: '700', fontSize: 14, letterSpacing: 0.1 },
-  meta: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 1 },
-  moreButton: { padding: 4 },
-  moreButtonText: { color: 'rgba(255,255,255,0.6)', fontSize: 18, letterSpacing: 2 },
+  displayName: { ...Type.username, color: Colors.textPrimary },
+  meta: { ...Type.caption, color: Colors.overlayMeta, marginTop: 1 },
+  moreButton: { padding: Space.xs },
+  moreButtonText: { ...Type.heading, color: Colors.overlayMeta, letterSpacing: 2 },
   footer: {
-    paddingHorizontal: 14,
-    paddingTop: 11,
-    paddingBottom: 14,
+    paddingHorizontal: Space.md,
+    paddingTop: Space.sm,
+    paddingBottom: Space.md,
   },
   actions: {
     flexDirection: 'row',
-    gap: 18,
-    marginBottom: 7,
+    gap: Space.lg,
+    marginBottom: Space.sm,
   },
-  actionButton: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  actionIcon: { fontSize: 20 },
-  actionCount: { color: '#888', fontSize: 14, fontWeight: '600', minWidth: 12 },
-  actionCountActive: { color: '#E5183A' },
-  caption: { color: '#fff', fontSize: 14, lineHeight: 20 },
-  captionName: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  actionButton: { flexDirection: 'row', alignItems: 'center', gap: Space.xs },
+  actionIcon: {},
+  actionCount: { ...Type.body, color: Colors.textSecondary, minWidth: 12 },
+  actionCountActive: { color: Colors.accent },
+  caption: { ...Type.body, color: Colors.textPrimary },
+  captionName: { ...Type.username, color: Colors.textPrimary },
 })
