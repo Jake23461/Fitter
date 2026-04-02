@@ -28,9 +28,13 @@ yarn-error.*
 
 # macOS
 .DS_Store
+
+# Secrets
+.vscode/mcp.json
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript

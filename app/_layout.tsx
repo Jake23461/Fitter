@@ -16,18 +16,34 @@ export default function RootLayout() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
-      if (session?.user) {
-        fetchProfile(session.user.id)
-        fetchActiveSession(session.user.id)
+
+      if (event === 'SIGNED_IN') {
+        if (session?.user) {
+          fetchProfile(session.user.id)
+          fetchActiveSession(session.user.id)
+        }
+        if (!hydrated) { hydrated = true; setLoading(false) }
+        router.replace('/(tabs)/feed')
+        return
       }
-      if (!hydrated) {
-        hydrated = true
-        setLoading(false)
-      }
+
       if (event === 'SIGNED_OUT') {
+        if (!hydrated) { hydrated = true; setLoading(false) }
         useSessionStore.getState().reset()
         router.replace('/(auth)/welcome')
+        return
       }
+
+      // INITIAL_SESSION — app cold start with existing session
+      if (event === 'INITIAL_SESSION') {
+        if (session?.user) {
+          fetchProfile(session.user.id)
+          fetchActiveSession(session.user.id)
+        }
+        if (!hydrated) { hydrated = true; setLoading(false) }
+      }
+
+      // TOKEN_REFRESHED — just update session, no nav or extra fetches
     })
 
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -56,10 +72,7 @@ export default function RootLayout() {
         <Stack.Screen name="profile/[id]" options={{ presentation: 'card' }} />
         <Stack.Screen name="create-post" options={{ presentation: 'modal' }} />
         <Stack.Screen name="log-pr" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="add-gym" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="create-workout" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="search" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="active-workout" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="edit-profile" options={{ presentation: 'modal' }} />
       </Stack>
     </QueryClientProvider>
   )
