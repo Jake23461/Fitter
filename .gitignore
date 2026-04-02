@@ -33,6 +33,10 @@ yarn-error.*
 .vscode/mcp.json
 *.pem
 
+# local tooling metadata
+.vscode/
+.claude/
+
 # local env files
 .env
 .env*.local
