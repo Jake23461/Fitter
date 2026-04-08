@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   View, Text, TouchableOpacity, StyleSheet, Platform,
   ScrollView, useWindowDimensions, NativeSyntheticEvent, NativeScrollEvent,
@@ -7,10 +7,10 @@ import type { ViewStyle } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import type { ComponentProps } from 'react'
-import { usePathname, useRouter } from 'expo-router'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '../../src/lib/supabase'
 import { useAuthStore } from '../../src/stores/authStore'
+import { TabName, useTabStore } from '../../src/stores/tabStore'
 import { Colors, Space, Radii, Type } from '../../src/tokens'
 import MapScreen from './map'
 import FeedScreen from './feed'
@@ -30,16 +30,19 @@ const SHADOW_ACCENT: ViewStyle = Platform.select({
 })!
 
 const TAB_CONFIG = [
-  { name: 'map', label: 'MAP', icon: 'map-outline', href: '/(tabs)/map', component: MapScreen },
-  { name: 'feed', label: 'HOME', icon: 'home-outline', href: '/(tabs)/feed', component: FeedScreen },
-  { name: 'checkin', label: 'CHECK-IN', icon: 'camera', href: '/(tabs)/checkin', center: true, component: CheckinScreen },
-  { name: 'notifications', label: 'ALERTS', icon: 'notifications-outline', href: '/(tabs)/notifications', component: NotificationsScreen },
-  { name: 'profile', label: 'PROFILE', icon: 'person-outline', href: '/(tabs)/profile', component: ProfileScreen },
+  { name: 'map',           label: 'MAP',      icon: 'map-outline',           component: MapScreen },
+  { name: 'feed',          label: 'HOME',     icon: 'home-outline',          component: FeedScreen },
+  { name: 'checkin',       label: 'CHECK-IN', icon: 'camera', center: true,  component: CheckinScreen },
+  { name: 'notifications', label: 'ALERTS',   icon: 'notifications-outline', component: NotificationsScreen },
+  { name: 'profile',       label: 'PROFILE',  icon: 'person-outline',        component: ProfileScreen },
 ] as const
 
-function getTabIndex(pathname: string) {
-  const matchedIndex = TAB_CONFIG.findIndex(tab => pathname === tab.href || pathname.startsWith(`${tab.href}/`))
-  return matchedIndex >= 0 ? matchedIndex : 0
+// Feed/Home is the default landing tab
+const DEFAULT_TAB_INDEX = TAB_CONFIG.findIndex(tab => tab.name === 'feed')
+
+function getTabIndex(tabName: TabName) {
+  const index = TAB_CONFIG.findIndex(tab => tab.name === tabName)
+  return index >= 0 ? index : DEFAULT_TAB_INDEX
 }
 
 function CustomTabBar({
@@ -83,13 +86,7 @@ function CustomTabBar({
           const isFocused = currentIndex === index
 
           if ('center' in tab && tab.center) {
-            return (
-              <View key={tab.name} style={styles.tab}>
-                <Text style={[styles.label, isFocused ? styles.labelActive : styles.labelInactive]}>
-                  {tab.label}
-                </Text>
-              </View>
-            )
+            return <View key={tab.name} style={styles.tab} />
           }
 
           return (
@@ -98,7 +95,7 @@ function CustomTabBar({
                 <View style={styles.iconWrap}>
                   <Ionicons
                     name={tab.icon as ComponentProps<typeof Ionicons>['name']}
-                    size={18}
+                    size={22}
                     color={isFocused ? Colors.accent : Colors.textMuted}
                   />
                   {tab.name === 'notifications' && unreadCount > 0 && (
@@ -107,9 +104,6 @@ function CustomTabBar({
                     </View>
                   )}
                 </View>
-                <Text style={[styles.label, isFocused ? styles.labelActive : styles.labelInactive]}>
-                  {tab.label}
-                </Text>
               </View>
             </TouchableOpacity>
           )
@@ -120,37 +114,51 @@ function CustomTabBar({
 }
 
 export default function TabLayout() {
-  const pathname = usePathname()
-  const router = useRouter()
   const { width } = useWindowDimensions()
   const scrollRef = useRef<ScrollView | null>(null)
-  const lastIndexRef = useRef<number | null>(null)
-  const currentIndex = useMemo(() => getTabIndex(pathname), [pathname])
+  const hasMountedRef = useRef(false)
+  const activeTab = useTabStore((state) => state.activeTab)
+  const setActiveTab = useTabStore((state) => state.setActiveTab)
+  const setDragMainPagerToX = useTabStore((state) => state.setDragMainPagerToX)
+  const setAnimateMainPagerToTab = useTabStore((state) => state.setAnimateMainPagerToTab)
+  const activeIndex = getTabIndex(activeTab)
 
   useEffect(() => {
     if (!width) return
+    scrollRef.current?.scrollTo({ x: activeIndex * width, animated: hasMountedRef.current })
+    hasMountedRef.current = true
+  }, [activeIndex, width])
 
-    const animated = lastIndexRef.current !== null
-    scrollRef.current?.scrollTo({ x: currentIndex * width, animated })
-    lastIndexRef.current = currentIndex
-  }, [currentIndex, width])
+  useEffect(() => {
+    setDragMainPagerToX(width ? ((x: number) => {
+      scrollRef.current?.scrollTo({ x, animated: false })
+    }) : null)
 
-  function navigateToIndex(index: number) {
-    const nextTab = TAB_CONFIG[index]
-    if (!nextTab) return
-    scrollRef.current?.scrollTo({ x: index * width, animated: true })
-    if (pathname !== nextTab.href) {
-      router.replace(nextTab.href as never)
-    }
-  }
+    return () => setDragMainPagerToX(null)
+  }, [setDragMainPagerToX, width])
 
+  useEffect(() => {
+    setAnimateMainPagerToTab(width ? ((tab: TabName) => {
+      scrollRef.current?.scrollTo({ x: getTabIndex(tab) * width, animated: true })
+    }) : null)
+
+    return () => setAnimateMainPagerToTab(null)
+  }, [setAnimateMainPagerToTab, width])
+
+  // After the swipe animation fully settles, update the active tab.
+  // This is the ONLY place we touch React state — never during the scroll itself.
   function handleMomentumEnd(event: NativeSyntheticEvent<NativeScrollEvent>) {
     if (!width) return
     const nextIndex = Math.round(event.nativeEvent.contentOffset.x / width)
-    const nextTab = TAB_CONFIG[nextIndex]
-    if (nextTab && pathname !== nextTab.href) {
-      router.replace(nextTab.href as never)
+    if (nextIndex >= 0 && nextIndex < TAB_CONFIG.length) {
+      setActiveTab(TAB_CONFIG[nextIndex].name)
     }
+  }
+
+  // Navbar or center-button press: animate the pager and update state.
+  function navigateToIndex(index: number) {
+    if (!width || index < 0 || index >= TAB_CONFIG.length) return
+    setActiveTab(TAB_CONFIG[index].name)
   }
 
   return (
@@ -163,8 +171,10 @@ export default function TabLayout() {
         directionalLockEnabled
         overScrollMode="never"
         showsHorizontalScrollIndicator={false}
-        scrollEventThrottle={16}
+        // No onScroll — zero JS callbacks during drag, native scroll runs uninterrupted.
         onMomentumScrollEnd={handleMomentumEnd}
+        // contentOffset positions the pager on Home without any scrollTo call.
+        contentOffset={{ x: activeIndex * width, y: 0 }}
         style={styles.pager}
         contentContainerStyle={styles.pagerContent}
       >
@@ -178,7 +188,7 @@ export default function TabLayout() {
         })}
       </ScrollView>
 
-      <CustomTabBar currentIndex={currentIndex} onSelect={navigateToIndex} />
+      <CustomTabBar currentIndex={activeIndex} onSelect={navigateToIndex} />
     </View>
   )
 }
@@ -220,11 +230,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Space.sm,
     borderRadius: Radii.xs,
   },
-  tabInnerInactive: {
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderStyle: 'dashed',
-  },
+  tabInnerInactive: {},
   label: {
     fontSize: Type.xs - 1,
     fontWeight: '700',

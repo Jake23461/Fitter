@@ -8,9 +8,16 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { router } from 'expo-router'
 import { supabase } from '../../src/lib/supabase'
 import { BrandWordmark } from '../../src/components/BrandWordmark'
+import { openProfile } from '../../src/features/profile-navigation'
+import {
+  getSocialActionLabel,
+  invalidateSocialState,
+  showSocialError,
+  toggleFollow,
+} from '../../src/features/social'
 import { useAuthStore } from '../../src/stores/authStore'
 import { Colors, Space, Radii, Type } from '../../src/tokens'
-import type { Notification } from '../../src/types'
+import type { Notification, SocialRelationship } from '../../src/types'
 
 function formatRelative(date: string): string {
   const diff = Date.now() - new Date(date).getTime()
@@ -39,7 +46,15 @@ function NotifIcon({ type }: { type: Notification['type'] }) {
   )
 }
 
-function NotifCard({ item, onAcceptFollow }: { item: Notification; onAcceptFollow: (actorId: string) => void }) {
+function NotifCard({
+  item,
+  relationship,
+  onFollowAction,
+}: {
+  item: Notification
+  relationship?: SocialRelationship
+  onFollowAction: (actorId: string, isFollowing: boolean) => void
+}) {
   const avatarUrl = item.actor?.avatar_url
     ? supabase.storage.from('avatars').getPublicUrl(item.actor.avatar_url).data.publicUrl
     : null
@@ -53,7 +68,12 @@ function NotifCard({ item, onAcceptFollow }: { item: Notification; onAcceptFollo
       style={styles.card}
       activeOpacity={0.85}
       onPress={() => {
-        if (item.post_id) router.push(`/post/${item.post_id}` as never)
+        if (item.post_id) {
+          router.push(`/post/${item.post_id}` as never)
+          return
+        }
+
+        if (item.actor_id) openProfile(item.actor_id)
       }}
     >
       {/* Left accent bar */}
@@ -91,10 +111,11 @@ function NotifCard({ item, onAcceptFollow }: { item: Notification; onAcceptFollo
       {item.type === 'follow' && item.actor_id && (
         <TouchableOpacity
           style={styles.acceptBtn}
-          onPress={() => onAcceptFollow(item.actor_id!)}
+          onPress={() => onFollowAction(item.actor_id!, relationship?.isFollowing ?? false)}
           activeOpacity={0.8}
+          disabled={relationship?.isFriend}
         >
-          <Text style={styles.acceptBtnText}>ACCEPT</Text>
+          <Text style={styles.acceptBtnText}>{getSocialActionLabel(relationship ?? { isFollowing: false, isFollowedBy: true, isFriend: false })}</Text>
         </TouchableOpacity>
       )}
     </TouchableOpacity>
@@ -118,6 +139,7 @@ export default function NotificationsScreen() {
       return data ?? []
     },
     enabled: !!session,
+    refetchInterval: 30_000,
   })
 
   const markRead = useMutation({
@@ -131,13 +153,51 @@ export default function NotificationsScreen() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications', session?.user.id] }),
   })
 
-  const acceptFollow = useMutation({
-    mutationFn: async (actorId: string) => {
-      const { error } = await supabase
-        .from('friendships')
-        .insert({ follower_id: actorId, following_id: session!.user.id })
-      if (error) Alert.alert('Error', error.message)
+  const { data: relationships = {} } = useQuery<Record<string, SocialRelationship>>({
+    queryKey: ['notifications-social', session?.user.id, notifications.map((notification) => notification.actor_id).join(',')],
+    queryFn: async () => {
+      const actorIds = Array.from(new Set(notifications.map((notification) => notification.actor_id).filter(Boolean))) as string[]
+      if (!session || actorIds.length === 0) return {}
+
+      const [{ data: followingRows }, { data: followedByRows }] = await Promise.all([
+        supabase
+          .from('friendships')
+          .select('following_id')
+          .eq('follower_id', session.user.id)
+          .in('following_id', actorIds),
+        supabase
+          .from('friendships')
+          .select('follower_id')
+          .eq('following_id', session.user.id)
+          .in('follower_id', actorIds),
+      ])
+
+      const followingSet = new Set((followingRows ?? []).map((row) => row.following_id))
+      const followedBySet = new Set((followedByRows ?? []).map((row) => row.follower_id))
+      return actorIds.reduce<Record<string, SocialRelationship>>((acc, actorId) => {
+        const isFollowing = followingSet.has(actorId)
+        const isFollowedBy = followedBySet.has(actorId)
+        acc[actorId] = {
+          isFollowing,
+          isFollowedBy,
+          isFriend: isFollowing && isFollowedBy,
+        }
+        return acc
+      }, {})
     },
+    enabled: !!session && notifications.length > 0,
+  })
+
+  const followMutation = useMutation({
+    mutationFn: async ({ actorId, isFollowing }: { actorId: string; isFollowing: boolean }) => {
+      await toggleFollow(session!.user.id, actorId, isFollowing)
+    },
+    onSuccess: (_, variables) => {
+      if (!session) return
+      invalidateSocialState(queryClient, session.user.id, variables.actorId)
+      queryClient.invalidateQueries({ queryKey: ['notifications-social', session.user.id] })
+    },
+    onError: showSocialError,
   })
 
   const newNotifs = notifications.filter(n => !n.is_read)
@@ -151,7 +211,7 @@ export default function NotificationsScreen() {
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <BrandWordmark color={Colors.textPrimary} />
-          <TouchableOpacity activeOpacity={0.7}>
+          <TouchableOpacity activeOpacity={0.7} onPress={() => router.push('/people-search' as never)}>
             <Ionicons name="search" size={22} color={Colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -175,18 +235,28 @@ export default function NotificationsScreen() {
                   <View style={styles.newDot} />
                 </View>
                 {newNotifs.map(n => (
-                  <NotifCard key={n.id} item={n} onAcceptFollow={actorId => acceptFollow.mutate(actorId)} />
+                  <NotifCard
+                    key={n.id}
+                    item={n}
+                    relationship={n.actor_id ? relationships[n.actor_id] : undefined}
+                    onFollowAction={(actorId, isFollowing) => followMutation.mutate({ actorId, isFollowing })}
+                  />
                 ))}
               </View>
             )}
             {/* EARLIER section */}
             {earlierNotifs.length > 0 && (
               <View style={styles.section}>
-                <View style={styles.sectionHeaderRow}>
-                  <Text style={styles.sectionLabel}>EARLIER</Text>
-                </View>
-                {earlierNotifs.map(n => (
-                  <NotifCard key={n.id} item={n} onAcceptFollow={actorId => acceptFollow.mutate(actorId)} />
+              <View style={styles.sectionHeaderRow}>
+                <Text style={styles.sectionLabel}>EARLIER</Text>
+              </View>
+              {earlierNotifs.map(n => (
+                  <NotifCard
+                    key={n.id}
+                    item={n}
+                    relationship={n.actor_id ? relationships[n.actor_id] : undefined}
+                    onFollowAction={(actorId, isFollowing) => followMutation.mutate({ actorId, isFollowing })}
+                  />
                 ))}
               </View>
             )}

@@ -13,8 +13,15 @@ export default function RootLayout() {
 
   useEffect(() => {
     let hydrated = false
+    let activeUserId: string | null = null
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const nextUserId = session?.user.id ?? null
+      if (activeUserId !== nextUserId) {
+        queryClient.clear()
+        activeUserId = nextUserId
+      }
+
       setSession(session)
 
       if (event === 'SIGNED_IN') {
@@ -35,6 +42,7 @@ export default function RootLayout() {
       }
 
       // INITIAL_SESSION — app cold start with existing session
+      // index.tsx handles the initial redirect; no need to router.replace here
       if (event === 'INITIAL_SESSION') {
         if (session?.user) {
           fetchProfile(session.user.id)
@@ -48,6 +56,7 @@ export default function RootLayout() {
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!hydrated) {
+        activeUserId = session?.user.id ?? null
         setSession(session)
         if (session?.user) {
           fetchProfile(session.user.id)
@@ -68,11 +77,20 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="post/[id]" options={{ presentation: 'card' }} />
+        <Stack.Screen
+          name="post/[id]"
+          options={{
+            presentation: 'transparentModal',
+            animation: 'none',
+            contentStyle: { backgroundColor: 'transparent' },
+          }}
+        />
         <Stack.Screen name="profile/[id]" options={{ presentation: 'card' }} />
         <Stack.Screen name="create-post" options={{ presentation: 'modal' }} />
-        <Stack.Screen name="log-pr" options={{ presentation: 'modal' }} />
         <Stack.Screen name="edit-profile" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="edit-stats" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="create-workout" options={{ presentation: 'modal' }} />
+        <Stack.Screen name="people-search" options={{ presentation: 'card' }} />
       </Stack>
     </QueryClientProvider>
   )

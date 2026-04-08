@@ -111,7 +111,9 @@ export default function CheckinScreen() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['comments', todaysPost?.id] }),
-        queryClient.invalidateQueries({ queryKey: ['todays-post'] }),
+        queryClient.invalidateQueries({ queryKey: ['todays-post', session?.user.id, today] }),
+        queryClient.invalidateQueries({ queryKey: ['post', todaysPost?.id] }),
+        queryClient.invalidateQueries({ queryKey: ['feed'] }),
       ])
       setCommentBody('')
     },
@@ -290,28 +292,6 @@ export default function CheckinScreen() {
       <SafeAreaView style={styles.doneSafe}>
         <StatusBar barStyle="light-content" hidden />
 
-        <View style={[styles.doneTopBar, { paddingTop: insets.top + Space.xs }]}>
-          <TouchableOpacity onPress={handleClose} activeOpacity={0.8} style={styles.closeBtn}>
-            <Ionicons name="close" size={22} color={Colors.textPrimary} />
-          </TouchableOpacity>
-
-          <View style={styles.donePill}>
-            <View style={styles.doneDot} />
-            <Text style={styles.donePillText}>TODAY COMPLETE</Text>
-          </View>
-
-          {activeSession ? (
-            <TouchableOpacity
-              style={styles.checkoutBtn}
-              onPress={handleCheckout}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.checkoutBtnText}>END</Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={styles.doneTopSpacer} />
-          )}
-        </View>
 
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -330,6 +310,10 @@ export default function CheckinScreen() {
               />
             }
           >
+            <View style={styles.donePill}>
+              <View style={styles.doneDot} />
+              <Text style={styles.donePillText}>TODAY COMPLETE</Text>
+            </View>
             <Text style={styles.doneBody}>Come back tomorrow!</Text>
 
             <View style={styles.doneMetaTop}>
@@ -580,6 +564,7 @@ const styles = StyleSheet.create({
   donePill: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'center',
     backgroundColor: Colors.accentDim,
     borderRadius: Radii.full,
     paddingHorizontal: Space.md,

@@ -43,12 +43,13 @@ export default function SetupProfileScreen() {
 
       if (avatarUri) {
         const ext = avatarUri.split('.').pop() ?? 'jpg'
-        const fileName = `${session.user.id}.${ext}`
+        const normalizedExt = ext.toLowerCase() === 'jpeg' ? 'jpg' : ext.toLowerCase()
+        const fileName = `${session.user.id}/avatar.${normalizedExt}`
         const response = await fetch(avatarUri)
         const blob = await response.blob()
         const { error: uploadError } = await supabase.storage
           .from('avatars')
-          .upload(fileName, blob, { upsert: true, contentType: `image/${ext}` })
+          .upload(fileName, blob, { upsert: true, contentType: `image/${normalizedExt}` })
         if (!uploadError) {
           // Store the storage path, not the full URL — display code builds URLs via getPublicUrl
           avatarUrl = fileName

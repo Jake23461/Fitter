@@ -1,16 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
-  StatusBar, RefreshControl, Dimensions, Alert,
+  StatusBar, RefreshControl, Dimensions, Alert, Animated, Pressable, Easing,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { router } from 'expo-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '../../src/lib/supabase'
 import { BrandWordmark } from '../../src/components/BrandWordmark'
+import { openProfile } from '../../src/features/profile-navigation'
 import { useAuthStore } from '../../src/stores/authStore'
 import { useSessionStore } from '../../src/stores/sessionStore'
+import { useTabStore } from '../../src/stores/tabStore'
 import { Colors, Space, Radii, Type } from '../../src/tokens'
 import { getDualSnapAssets, getPostMediaUrl } from '../../src/features/post-media'
 import type { Post, Profile } from '../../src/types'
@@ -35,7 +37,7 @@ function AppHeader({ avatarUrl }: { avatarUrl?: string | null }) {
         <Text style={styles.headerEyebrow}>TODAY'S CHECK-INS</Text>
         <BrandWordmark color={Colors.textPrimary} />
       </View>
-      <TouchableOpacity activeOpacity={0.7}>
+      <TouchableOpacity activeOpacity={0.7} onPress={() => router.push('/people-search' as never)}>
         <Ionicons name="search" size={22} color={Colors.textSecondary} />
       </TouchableOpacity>
     </View>
@@ -86,6 +88,7 @@ function LockedFeed({
   posts: Post[]
   hasActiveSession: boolean
 }) {
+  const setActiveTab = useTabStore((state) => state.setActiveTab)
   const title = hasActiveSession ? 'FINISH TODAY\'S CHECK-IN' : 'CHECK IN TO UNLOCK'
   const body = hasActiveSession
     ? 'Your camera is ready, but today is not counted until you upload your snap. Post it to unlock everyone else\'s check-ins.'
@@ -103,7 +106,7 @@ function LockedFeed({
         <TouchableOpacity
           style={styles.checkinCta}
           activeOpacity={0.85}
-          onPress={() => router.push('/(tabs)/checkin')}
+          onPress={() => setActiveTab('checkin')}
         >
           <Text style={styles.checkinCtaText}>{ctaLabel}</Text>
         </TouchableOpacity>
@@ -138,10 +141,20 @@ function StoryCircle({ profile, isSelf }: { profile: Profile | null; isSelf?: bo
 }
 
 function PostCard({ post }: { post: Post }) {
-  const [liked, setLiked] = useState(post.user_has_liked ?? false)
-  const [likeCount, setLikeCount] = useState(post.like_count)
   const [isInsetExpanded, setIsInsetExpanded] = useState(false)
+  const [likePending, setLikePending] = useState(false)
+  const [heartBurst, setHeartBurst] = useState<{ x: number; y: number; visible: boolean }>({
+    x: 0,
+    y: 0,
+    visible: false,
+  })
   const { session } = useAuthStore()
+  const queryClient = useQueryClient()
+  const postQueryKey = ['post', post.id, session?.user.id] as const
+  const lastTapRef = useRef(0)
+  const singleTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const heartScale = useRef(new Animated.Value(0.4)).current
+  const heartOpacity = useRef(new Animated.Value(0)).current
 
   const avatarUrl = post.profile?.avatar_url
     ? supabase.storage.from('avatars').getPublicUrl(post.profile.avatar_url).data.publicUrl
@@ -163,24 +176,127 @@ function PostCard({ post }: { post: Post }) {
     Alert.alert('Reported', 'Thanks for keeping the community safe.')
   }
 
-  async function handleLike() {
-    if (!session) return
-    const next = !liked
-    setLiked(next)
-    setLikeCount(c => next ? c + 1 : c - 1)
-    if (next) {
-      await supabase.from('post_likes').insert({ post_id: post.id, user_id: session.user.id })
-    } else {
-      await supabase.from('post_likes').delete()
-        .eq('post_id', post.id).eq('user_id', session.user.id)
+  useEffect(() => {
+    return () => {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current)
+      }
     }
+  }, [])
+
+  function showHeartBurst(x: number, y: number) {
+    setHeartBurst({ x, y, visible: true })
+    heartScale.setValue(0.4)
+    heartOpacity.setValue(0)
+
+    Animated.sequence([
+      Animated.parallel([
+        Animated.spring(heartScale, {
+          toValue: 1.15,
+          friction: 6,
+          tension: 140,
+          useNativeDriver: true,
+        }),
+        Animated.timing(heartOpacity, {
+          toValue: 1,
+          duration: 120,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+      Animated.delay(260),
+      Animated.parallel([
+        Animated.timing(heartScale, {
+          toValue: 0.9,
+          duration: 180,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(heartOpacity, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.in(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start(({ finished }) => {
+      if (finished) {
+        setHeartBurst((current) => ({ ...current, visible: false }))
+      }
+    })
+  }
+
+  async function handleLike(forceLike = false) {
+    if (!session || likePending) return
+
+    const liked = post.user_has_liked ?? false
+    if (forceLike && liked) return
+
+    setLikePending(true)
+
+    const next = !liked
+    const prevCount = post.like_count
+
+    // Optimistically patch feed + post caches so UI stays consistent everywhere.
+    queryClient.setQueriesData<Post[]>({ queryKey: ['feed'] }, (old) =>
+      old?.map(p => p.id === post.id
+        ? { ...p, user_has_liked: next, like_count: next ? p.like_count + 1 : Math.max(p.like_count - 1, 0) }
+        : p
+      )
+    )
+    queryClient.setQueryData<Post | null>(postQueryKey, (old) =>
+      old ? { ...old, user_has_liked: next, like_count: next ? old.like_count + 1 : Math.max(old.like_count - 1, 0) } : old
+    )
+
+    const { error } = next
+      ? await supabase.from('post_likes').insert({ post_id: post.id, user_id: session.user.id })
+      : await supabase.from('post_likes').delete().eq('post_id', post.id).eq('user_id', session.user.id)
+
+    if (error) {
+      // Roll back optimistic cache on failure.
+      queryClient.setQueriesData<Post[]>({ queryKey: ['feed'] }, (old) =>
+        old?.map(p => p.id === post.id
+          ? { ...p, user_has_liked: liked, like_count: prevCount }
+          : p
+        )
+      )
+      queryClient.setQueryData<Post | null>(postQueryKey, (old) =>
+        old ? { ...old, user_has_liked: liked, like_count: prevCount } : old
+      )
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['feed'] })
+    queryClient.invalidateQueries({ queryKey: ['post', post.id] })
+    setLikePending(false)
+  }
+
+  function handlePrimaryPress(event: Parameters<NonNullable<React.ComponentProps<typeof Pressable>['onPress']>>[0]) {
+    const now = Date.now()
+    const isDoubleTap = now - lastTapRef.current < 250
+    const { locationX, locationY } = event.nativeEvent
+
+    if (isDoubleTap) {
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current)
+        singleTapTimeoutRef.current = null
+      }
+      showHeartBurst(locationX, locationY)
+      void handleLike(true)
+    } else {
+      singleTapTimeoutRef.current = setTimeout(() => {
+        router.push(`/post/${post.id}` as never)
+        singleTapTimeoutRef.current = null
+      }, 250)
+    }
+
+    lastTapRef.current = now
   }
 
   return (
     <View style={styles.postCard}>
       <View style={styles.postAuthorRow}>
         <TouchableOpacity
-          onPress={() => router.push(`/profile/${post.user_id}` as never)}
+          onPress={() => openProfile(post.user_id, session?.user.id)}
           activeOpacity={0.8}
           style={styles.postAuthorTap}
         >
@@ -215,10 +331,7 @@ function PostCard({ post }: { post: Post }) {
       </View>
 
       <View style={styles.snapFrame}>
-        <TouchableOpacity
-          activeOpacity={0.96}
-          onPress={() => router.push(`/post/${post.id}` as never)}
-        >
+        <Pressable onPress={handlePrimaryPress} style={styles.primarySnapPressable}>
           {primaryUrl ? (
             <Image source={{ uri: primaryUrl }} style={styles.primarySnap} resizeMode="cover" />
           ) : (
@@ -226,7 +339,23 @@ function PostCard({ post }: { post: Post }) {
               <Ionicons name="image-outline" size={28} color={Colors.textMuted} />
             </View>
           )}
-        </TouchableOpacity>
+          {heartBurst.visible && (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.likeBurst,
+                {
+                  left: heartBurst.x - 34,
+                  top: heartBurst.y - 34,
+                  opacity: heartOpacity,
+                  transform: [{ scale: heartScale }],
+                },
+              ]}
+            >
+              <Ionicons name="heart" size={68} color={Colors.textPrimary} />
+            </Animated.View>
+          )}
+        </Pressable>
 
         {secondaryUrl && (
           <TouchableOpacity
@@ -244,13 +373,13 @@ function PostCard({ post }: { post: Post }) {
 
       <View style={styles.postFooter}>
         <View style={styles.postActions}>
-          <TouchableOpacity onPress={handleLike} style={styles.actionBtn} activeOpacity={0.7}>
+          <TouchableOpacity onPress={() => void handleLike()} style={styles.actionBtn} activeOpacity={0.7} disabled={likePending}>
             <Ionicons
-              name={liked ? 'heart' : 'heart-outline'}
+              name={(post.user_has_liked ?? false) ? 'heart' : 'heart-outline'}
               size={22}
-              color={liked ? Colors.accent : Colors.textSecondary}
+              color={(post.user_has_liked ?? false) ? Colors.accent : Colors.textSecondary}
             />
-            <Text style={styles.actionCount}>{likeCount}</Text>
+            <Text style={styles.actionCount}>{post.like_count}</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -284,7 +413,7 @@ function UnlockedFeed({
 }) {
   const tabs: { key: FeedTab; label: string }[] = [
     { key: 'trending', label: 'TRENDING' },
-    { key: 'friends', label: 'FRIENDS' },
+    { key: 'friends', label: 'FOLLOWING' },
     { key: 'nearby', label: 'NEARBY' },
   ]
 
@@ -380,7 +509,8 @@ export default function FeedScreen() {
       return data.map(p => ({ ...p, user_has_liked: likedSet.has(p.id) }))
     },
     enabled: !!session,
-    staleTime: 60_000,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   })
 
   const avatarUrl = profile?.avatar_url
@@ -550,8 +680,16 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: Colors.surfaceElevated,
   },
+  primarySnapPressable: { position: 'relative' },
   primarySnap: { width: '100%', height: SCREEN_WIDTH * 1.05 },
   snapFallback: { alignItems: 'center', justifyContent: 'center' },
+  likeBurst: {
+    position: 'absolute',
+    width: 68,
+    height: 68,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   secondarySnapWrap: {
     position: 'absolute',
     right: Space.md,

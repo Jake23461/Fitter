@@ -30,6 +30,15 @@ create table public.profiles (
   constraint username_format check (username ~ '^[a-z0-9_]+$')
 );
 
+create table public.profile_privacy_settings (
+  user_id              uuid primary key references public.profiles(id) on delete cascade,
+  stats_visibility     text not null default 'public' check (stats_visibility in ('public', 'friends', 'private')),
+  calendar_visibility  text not null default 'public' check (calendar_visibility in ('public', 'friends', 'private')),
+  saved_visibility     text not null default 'private' check (saved_visibility in ('public', 'friends', 'private')),
+  workouts_visibility  text not null default 'private' check (workouts_visibility in ('public', 'friends', 'private')),
+  updated_at           timestamptz not null default now()
+);
+
 -- gyms
 create table public.gyms (
   id             uuid primary key default uuid_generate_v4(),
@@ -185,6 +194,7 @@ create table public.notifications (
 -- ============================================================
 
 create index profiles_home_gym_id on public.profiles(home_gym_id);
+create index profile_privacy_settings_user_id on public.profile_privacy_settings(user_id);
 
 create index gyms_lat_lng on public.gyms(lat, lng);
 create index gyms_is_verified on public.gyms(is_verified);
@@ -203,6 +213,7 @@ create index post_likes_user_id  on public.post_likes(user_id);
 create index post_comments_post_created on public.post_comments(post_id, created_at);
 
 create index friendships_following_id on public.friendships(following_id);
+create index friendships_follower_id on public.friendships(follower_id);
 
 create index saved_workouts_user_id on public.saved_workouts(user_id);
 
@@ -231,6 +242,10 @@ create trigger profiles_updated_at
   before update on public.profiles
   for each row execute function public.handle_updated_at();
 
+create trigger profile_privacy_settings_updated_at
+  before update on public.profile_privacy_settings
+  for each row execute function public.handle_updated_at();
+
 -- Auto-create profile on sign-up
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
@@ -242,6 +257,7 @@ begin
     lower(split_part(new.email, '@', 1)) || '_' || substr(replace(new.id::text, '-', ''), 1, 6),
     split_part(new.email, '@', 1)
   );
+  insert into public.profile_privacy_settings (user_id) values (new.id);
   return new;
 end;
 $$;
@@ -250,9 +266,36 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
+create or replace function public.can_view_profile_section(owner_id uuid, visibility text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    auth.uid() = owner_id
+    or visibility = 'public'
+    or (
+      visibility = 'friends'
+      and exists (
+        select 1
+        from public.friendships outgoing
+        where outgoing.follower_id = auth.uid()
+          and outgoing.following_id = owner_id
+      )
+      and exists (
+        select 1
+        from public.friendships incoming
+        where incoming.follower_id = owner_id
+          and incoming.following_id = auth.uid()
+      )
+    );
+$$;
+
 -- Maintain like_count on posts
 create or replace function public.handle_like_count()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if TG_OP = 'INSERT' then
     update public.posts set like_count = like_count + 1 where id = new.post_id;
@@ -269,7 +312,7 @@ create trigger post_likes_count
 
 -- Maintain comment_count on posts
 create or replace function public.handle_comment_count()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if TG_OP = 'INSERT' then
     update public.posts set comment_count = comment_count + 1 where id = new.post_id;
@@ -286,7 +329,7 @@ create trigger post_comments_count
 
 -- Maintain total_checkins on profiles
 create or replace function public.handle_checkin_count()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if TG_OP = 'INSERT' then
     update public.profiles set total_checkins = total_checkins + 1 where id = new.user_id;
@@ -299,11 +342,31 @@ create trigger gym_sessions_checkin_count
   after insert on public.gym_sessions
   for each row execute function public.handle_checkin_count();
 
+-- Insert follow notifications
+create or replace function public.handle_follow_notification()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.follower_id = new.following_id then
+    return new;
+  end if;
+
+  insert into public.notifications (user_id, type, actor_id, body)
+  values (new.following_id, 'follow', new.follower_id, 'started following you.');
+
+  return new;
+end;
+$$;
+
+create trigger friendships_notify
+  after insert on public.friendships
+  for each row execute function public.handle_follow_notification();
+
 -- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
 
 alter table public.profiles       enable row level security;
+alter table public.profile_privacy_settings enable row level security;
 alter table public.gyms           enable row level security;
 alter table public.gym_sessions   enable row level security;
 alter table public.posts          enable row level security;
@@ -323,6 +386,15 @@ create policy "Profiles are publicly readable"
 
 create policy "Users can update own profile"
   on public.profiles for update using (auth.uid() = id);
+
+create policy "Profile privacy settings are publicly readable"
+  on public.profile_privacy_settings for select using (true);
+
+create policy "Users can insert own profile privacy settings"
+  on public.profile_privacy_settings for insert with check (auth.uid() = user_id);
+
+create policy "Users can update own profile privacy settings"
+  on public.profile_privacy_settings for update using (auth.uid() = user_id);
 
 -- gyms
 create policy "Gyms are publicly readable"
@@ -391,8 +463,15 @@ create policy "Users can unfollow"
   on public.friendships for delete using (auth.uid() = follower_id);
 
 -- saved_workouts
-create policy "Users can read own saves"
-  on public.saved_workouts for select using (auth.uid() = user_id);
+create policy "Users can read visible saves"
+  on public.saved_workouts for select using (
+    exists (
+      select 1
+      from public.profile_privacy_settings privacy
+      where privacy.user_id = saved_workouts.user_id
+        and public.can_view_profile_section(saved_workouts.user_id, privacy.saved_visibility)
+    )
+  );
 
 create policy "Users can save posts"
   on public.saved_workouts for insert with check (auth.uid() = user_id);
@@ -401,8 +480,15 @@ create policy "Users can unsave posts"
   on public.saved_workouts for delete using (auth.uid() = user_id);
 
 -- pr_entries
-create policy "Users can read own PRs"
-  on public.pr_entries for select using (auth.uid() = user_id);
+create policy "Users can read visible PRs"
+  on public.pr_entries for select using (
+    exists (
+      select 1
+      from public.profile_privacy_settings privacy
+      where privacy.user_id = pr_entries.user_id
+        and public.can_view_profile_section(pr_entries.user_id, privacy.stats_visibility)
+    )
+  );
 
 create policy "Users can insert own PRs"
   on public.pr_entries for insert with check (auth.uid() = user_id);
@@ -546,8 +632,15 @@ alter table public.workout_template_exercises enable row level security;
 alter table public.user_stats                 enable row level security;
 
 -- workout_templates: publicly readable, owner can CRUD
-create policy "Workout templates are publicly readable"
-  on public.workout_templates for select using (true);
+create policy "Workout templates follow profile privacy"
+  on public.workout_templates for select using (
+    exists (
+      select 1
+      from public.profile_privacy_settings privacy
+      where privacy.user_id = workout_templates.user_id
+        and public.can_view_profile_section(workout_templates.user_id, privacy.workouts_visibility)
+    )
+  );
 create policy "Users can insert own workout templates"
   on public.workout_templates for insert with check (auth.uid() = user_id);
 create policy "Users can update own workout templates"
@@ -556,8 +649,16 @@ create policy "Users can delete own workout templates"
   on public.workout_templates for delete using (auth.uid() = user_id);
 
 -- workout_template_exercises: follow parent template ownership
-create policy "Workout exercises are publicly readable"
-  on public.workout_template_exercises for select using (true);
+create policy "Workout exercises follow profile privacy"
+  on public.workout_template_exercises for select using (
+    exists (
+      select 1
+      from public.workout_templates template
+      join public.profile_privacy_settings privacy on privacy.user_id = template.user_id
+      where template.id = workout_template_exercises.template_id
+        and public.can_view_profile_section(template.user_id, privacy.workouts_visibility)
+    )
+  );
 create policy "Users can insert own template exercises"
   on public.workout_template_exercises for insert with check (
     auth.uid() = (select user_id from public.workout_templates where id = template_id)
@@ -572,8 +673,15 @@ create policy "Users can delete own template exercises"
   );
 
 -- user_stats: publicly readable, owner can upsert
-create policy "User stats are publicly readable"
-  on public.user_stats for select using (true);
+create policy "User stats follow profile privacy"
+  on public.user_stats for select using (
+    exists (
+      select 1
+      from public.profile_privacy_settings privacy
+      where privacy.user_id = user_stats.user_id
+        and public.can_view_profile_section(user_stats.user_id, privacy.stats_visibility)
+    )
+  );
 create policy "Users can insert own stats"
   on public.user_stats for insert with check (auth.uid() = user_id);
 create policy "Users can update own stats"

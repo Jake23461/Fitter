@@ -13,6 +13,30 @@ export type Profile = {
   updated_at: string
 }
 
+export type SocialRelationship = {
+  isFollowing: boolean
+  isFollowedBy: boolean
+  isFriend: boolean
+}
+
+export type SocialCounts = {
+  followerCount: number
+  followingCount: number
+}
+
+export type SocialProfileSearchResult = Profile & SocialRelationship
+
+export type ProfileVisibility = 'public' | 'friends' | 'private'
+
+export type ProfilePrivacySettings = {
+  user_id: string
+  stats_visibility: ProfileVisibility
+  calendar_visibility: ProfileVisibility
+  saved_visibility: ProfileVisibility
+  workouts_visibility: ProfileVisibility
+  updated_at: string
+}
+
 export type Gym = {
   id: string
   name: string
